@@ -1,9 +1,9 @@
-# Espace Client
+# Test Technique Société Générale
 
 A small banking client area — accounts, recent operations and transfers —
 containerized and running on Azure Container Apps.
 
-Live: <https://ca-sgtest-frontend.lemonsmoke-7b6c27a7.francecentral.azurecontainerapps.io>
+Lien du FrontEnd: <https://ca-sgtest-frontend.lemonsmoke-7b6c27a7.francecentral.azurecontainerapps.io>
 
 ```
 backend/    Node 20 + Express, in-memory data, no database
@@ -63,44 +63,6 @@ the two Container Apps and smoke-tests the public URL. The smoke test matters �
 not that the application works, so the pipeline polls `/api/health` through the
 public URL and fails if it never answers.
 
-Images are deployed by SHA, never by `:latest`. Container Apps compares the
-image string, so redeploying the same `latest` tag creates no revision and the
-deployment silently does nothing.
-
-GitHub authenticates to Azure with federated OIDC, so no credential is stored
-anywhere, and the service principal holds `Contributor` on the single resource
-group rather than on the subscription.
-
-Terraform owns the infrastructure and the pipeline owns the running version.
-They coexist because the image field sits under `ignore_changes`; without that,
-the next `terraform apply` would roll production back to whatever tag is written
-in `variables.tf`.
-
-## Decisions worth explaining
-
-**Container Apps rather than AKS.** Ingress, autoscaling, probes and log
-shipping come with the platform. The same thing on AKS is a day of plumbing, and
-the trade is that there is no room for custom controllers or a service mesh.
-
-**Liveness is patient, readiness is quick.** Restarting a replica is expensive
-and drops in-flight requests, so liveness waits (10s, three failures). Taking a
-replica out of rotation is cheap and reversible, so readiness reacts in 5s. A
-liveness probe that is too eager turns a slow minute into a restart loop and
-causes the outage it was supposed to catch.
-
-**The health check tests nothing downstream.** If it reported the health of a
-dependency, one backend incident would fail the probe on every replica at once
-and restart them all, turning a partial failure into a total one.
-
-**Shutdown fails readiness before closing the socket.** On SIGTERM the process
-answers 503 for eight seconds while still serving real requests, then drains.
-Closing first would race the load balancer, which is still sending traffic to a
-replica it does not yet know is leaving.
-
-**Transfers validate everything before touching a balance,** so a rejected
-transfer leaves no partial write. That is what the unit tests actually assert,
-and moving the debit above the balance check makes exactly that test fail.
-
 ## Behaviour under load
 
 Two four-minute k6 runs against the public URL, 60 virtual users at plateau, on
@@ -118,32 +80,14 @@ platform side, and five distinct `meta.instance` values observed by k6 on the
 application side. Either one alone could be an artefact of how it was taken;
 both agreeing is the actual evidence.
 
-The thresholds in the script are assertions rather than observations — a load
-test that cannot fail proves nothing.
 
 ## Known limitations
 
-**State lives in memory and is not shared between replicas.** This is the real
-one. Under autoscaling, a transfer made on one replica is invisible to the other
-four, and balances reset whenever a replica restarts. The demo survives because
-the load test is read-only; anything real needs a database.
+**Nothing checks that deployed infrastructure matches the code.** 
+**Terraform state is a local file** 
+**There is no authentication.** 
 
-**Nothing checks that deployed infrastructure matches the code.** This actually
-bit during the build: the probes and the autoscale rule were committed but
-`terraform apply` had not been run, so the live config was still capped at one
-replica. The first load test showed a flat line, which is how it was found. A
-`terraform plan -detailed-exitcode` step in the pipeline would have caught it
-immediately.
-
-**Terraform state is a local file** — not shared, not locked, not backed up. A
-remote backend with state locking is the standard fix.
-
-**There is no authentication.** Anyone with the URL can read the accounts and
-issue transfers. Fine for fixture data, obviously not for anything else.
-
-**`/metrics` is exposed but nothing scrapes it**, and nothing alerts on the logs
-being collected. There is one environment and no staging, and a rollback means
-redeploying a previous SHA by hand.
+**`/metrics` is exposed but nothing scrapes it**,
 
 **The load test is read-only and run from a single machine.** Sustained writes
 would drain the in-memory balances and return 422s, which would measure the
