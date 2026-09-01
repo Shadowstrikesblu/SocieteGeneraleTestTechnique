@@ -6,12 +6,35 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    # Security headers, applied to every response including errors, hence
+    # `always`. Cheap, and their absence is the first thing a scanner reports.
+    #
+    # nginx does not merge add_header across levels: a location that declares
+    # its own add_header drops every one inherited from here. That is why
+    # /healthz below sets its content type with default_type instead.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "geolocation=(), camera=(), microphone=()" always;
+    # TLS is terminated by the platform's ingress; this tells the browser never
+    # to try this host over plain HTTP again.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    # The page loads nothing from anywhere else and must never be framed —
+    # frame-ancestors is what actually stops clickjacking on modern browsers,
+    # X-Frame-Options above covers the older ones.
+    # 'unsafe-inline' is kept for styles only: Vue can inject style tags at
+    # runtime, and removing it would need a per-response nonce, which a static
+    # bundle cannot produce.
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+
     # Probe target for the container platform. Answered by nginx itself, so it
     # reports the frontend's own health without involving the backend: a
     # backend incident must not restart every frontend replica.
     location = /healthz {
         access_log off;
-        add_header Content-Type text/plain;
+        # default_type rather than add_header: declaring an add_header here
+        # would discard every security header inherited from the server block.
+        default_type text/plain;
         return 200 'ok';
     }
 

@@ -44,10 +44,15 @@ resource "azurerm_container_app" "backend" {
   }
 
   template {
-    # Never scale to zero: a cold start would be paid by the first user of the
+    # Two, not one: with a single replica, a restart — a deploy, a failed
+    # liveness probe, a platform-initiated move — is a gap in service with
+    # nothing to absorb it. Two is the smallest number that removes the single
+    # point of failure.
+    #
+    # Never zero either: a cold start would be paid by the first user of the
     # day. Five is a ceiling that bounds the cost of a traffic spike, not a
     # capacity estimate.
-    min_replicas = 1
+    min_replicas = 2
     max_replicas = 5
 
     # Scale on in-flight HTTP requests per replica. KEDA polls every 30s and
@@ -132,7 +137,9 @@ resource "azurerm_container_app" "frontend" {
   }
 
   template {
-    min_replicas = 1
+    # Same reasoning as the backend: the frontend is the only public entry
+    # point, so it is the one component whose restart is visible to users.
+    min_replicas = 2
     max_replicas = 5
 
     # Mirrors the backend rule: the frontend takes all public traffic, so it
