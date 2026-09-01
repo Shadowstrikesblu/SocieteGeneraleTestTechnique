@@ -83,12 +83,8 @@ both agreeing is the actual evidence.
 
 ## Known limitations
 
-**Nothing checks that deployed infrastructure matches the code.** 
-**Terraform state is a local file** 
-**There is no authentication.** 
-
-**`/metrics` is exposed but nothing scrapes it**,
-
-**The load test is read-only and run from a single machine.** Sustained writes
-would drain the in-memory balances and return 422s, which would measure the
-fixture rather than the system.
+Nothing checks that deployed infrastructure matches the code.
+Terraform state is a local file 
+There is no authentication.
+`/metrics` is exposed but nothing scrapes it,
+The load test is read-only and run from a single machine.
