@@ -3,7 +3,7 @@
 A small banking client area — accounts, recent operations and transfers —
 containerized and running on Azure Container Apps.
 
-Lien du FrontEnd: <https://ca-sgtest-frontend.lemonsmoke-7b6c27a7.francecentral.azurecontainerapps.io>
+Link to the App: <https://ca-sgtest-frontend.lemonsmoke-7b6c27a7.francecentral.azurecontainerapps.io>
 
 ```
 backend/    Node 20 + Express, in-memory data, no database
