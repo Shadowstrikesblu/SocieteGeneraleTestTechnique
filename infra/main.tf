@@ -44,10 +44,23 @@ resource "azurerm_container_app" "backend" {
   }
 
   template {
-    # One replica for now. Probes and the autoscale rule come next; running
-    # first, scaling second, so each is a decision that can be judged alone.
+    # Never scale to zero: a cold start would be paid by the first user of the
+    # day. Five is a ceiling that bounds the cost of a traffic spike, not a
+    # capacity estimate.
     min_replicas = 1
-    max_replicas = 1
+    max_replicas = 5
+
+    # Scale on in-flight HTTP requests per replica. KEDA polls every 30s and
+    # will not scale back in for 300s, so a load test needs a plateau of at
+    # least two minutes to show anything.
+    #
+    # Ten is deliberately low so that scale-out is observable within a short
+    # test. A production threshold would come from latency measured under real
+    # traffic, not from what makes a demo work.
+    http_scale_rule {
+      name                = "http-concurrency"
+      concurrent_requests = "10"
+    }
 
     container {
       name   = "backend"
@@ -58,6 +71,31 @@ resource "azurerm_container_app" "backend" {
       env {
         name  = "PORT"
         value = "3000"
+      }
+
+      # Liveness: is the process wedged? Only a restart fixes that, so it is
+      # checked slowly and tolerates three failures. An aggressive liveness
+      # probe turns a slow moment into a restart loop, causing the outage it
+      # was meant to catch.
+      liveness_probe {
+        transport               = "HTTP"
+        port                    = 3000
+        path                    = "/api/health"
+        initial_delay           = 5
+        interval_seconds        = 10
+        failure_count_threshold = 3
+      }
+
+      # Readiness: should this replica receive traffic right now? Checked
+      # faster, because pulling a replica out of rotation is cheap and
+      # reversible. This is also what lets a graceful shutdown drain safely.
+      readiness_probe {
+        transport               = "HTTP"
+        port                    = 3000
+        path                    = "/api/health"
+        interval_seconds        = 5
+        failure_count_threshold = 3
+        success_count_threshold = 1
       }
     }
   }
@@ -95,7 +133,14 @@ resource "azurerm_container_app" "frontend" {
 
   template {
     min_replicas = 1
-    max_replicas = 1
+    max_replicas = 5
+
+    # Mirrors the backend rule: the frontend takes all public traffic, so it
+    # must scale before the backend ever sees the load.
+    http_scale_rule {
+      name                = "http-concurrency"
+      concurrent_requests = "10"
+    }
 
     container {
       name   = "frontend"
@@ -118,6 +163,27 @@ resource "azurerm_container_app" "frontend" {
       env {
         name  = "BACKEND_HOST"
         value = azurerm_container_app.backend.ingress[0].fqdn
+      }
+
+      # Both probes hit nginx's own /healthz, never /api. A frontend replica is
+      # healthy when it can serve the page: it must not be restarted, nor
+      # pulled from rotation, because the backend is having a bad minute.
+      liveness_probe {
+        transport               = "HTTP"
+        port                    = 8080
+        path                    = "/healthz"
+        initial_delay           = 5
+        interval_seconds        = 10
+        failure_count_threshold = 3
+      }
+
+      readiness_probe {
+        transport               = "HTTP"
+        port                    = 8080
+        path                    = "/healthz"
+        interval_seconds        = 5
+        failure_count_threshold = 3
+        success_count_threshold = 1
       }
     }
   }
