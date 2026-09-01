@@ -2,6 +2,11 @@
 import { ref, computed } from 'vue';
 import { api, useResource, euro, frenchDate, errorLabel } from './api';
 
+// Served from public/ as-is. Bound rather than written literally in the
+// template: Vite rewrites a literal src into a build-time import, which
+// makes a missing file a build failure instead of a broken image.
+const logoUrl = '/logo.png';
+
 const accounts = useResource(() => api('/api/accounts'));
 const transactions = useResource(() => api('/api/transactions'));
 const beneficiaries = useResource(() => api('/api/beneficiaries'));
@@ -47,6 +52,7 @@ async function submitTransfer() {
 
 <template>
   <header>
+    <img :src="logoUrl" alt="Société Générale" class="logo" />
     <h1>Espace Client</h1>
   </header>
 
@@ -143,12 +149,22 @@ body {
   background: #f7f7f8;
 }
 header {
-  background: var(--ink);
-  color: #fff;
-  padding: 18px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: #fff;
+  padding: 14px 24px;
   border-bottom: 3px solid var(--red);
 }
-header h1 { margin: 0; font-size: 18px; letter-spacing: 0.02em; }
+.logo { height: 26px; width: auto; display: block; }
+header h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
+  color: var(--ink);
+}
 main {
   max-width: 720px;
   margin: 24px auto;
