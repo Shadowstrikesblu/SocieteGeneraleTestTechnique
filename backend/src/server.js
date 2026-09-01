@@ -51,6 +51,17 @@ const httpDuration = new client.Histogram({
 // readiness interval that is 17k lines a day per replica.
 const NOISY = new Set(['/api/health', '/metrics']);
 
+// Flipped by the shutdown handler so /api/health starts failing readiness
+// before the server stops accepting connections.
+let shuttingDown = false;
+
+// Time given to the platform to notice this replica is unready and stop
+// routing to it, before any socket is closed.
+const READINESS_GRACE_MS = Number(process.env.READINESS_GRACE_MS || 8000);
+// Time given to in-flight requests to finish once the socket is closed.
+const DRAIN_TIMEOUT_MS = Number(process.env.DRAIN_TIMEOUT_MS || 10000);
+// 8 + 10 = 18s worst case, inside the 30s the platform grants before SIGKILL.
+
 app.disable('x-powered-by');
 
 // JSON bodies only, size-bounded: an unbounded POST body is a trivial
@@ -103,6 +114,12 @@ const fail = (res, status, code, message) =>
 // restart every replica that depends on it, turning a partial failure into a
 // total one.
 app.get('/api/health', (req, res) => {
+  // While draining, answer 503. This fails the readiness probe, which is what
+  // makes the platform stop routing new requests here. Liveness tolerates
+  // three failures at 10s, so this never triggers a restart during the drain.
+  if (shuttingDown) {
+    return res.status(503).json({ status: 'shutting_down', instance: INSTANCE });
+  }
   res.status(200).json({ status: 'ok', instance: INSTANCE, uptimeSeconds: Math.round(process.uptime()) });
 });
 
@@ -160,6 +177,43 @@ app.use((err, req, res, next) => {
   return fail(res, 500, 'internal_error', 'Unexpected server error.');
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info({ port: PORT }, 'backend listening');
 });
+
+// Container Apps sends SIGTERM on every deploy, scale-in and restart. Node
+// running as PID 1 has no default handler, so without this the process is
+// killed outright and in-flight requests are dropped.
+function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ signal, readinessGraceMs: READINESS_GRACE_MS }, 'shutdown signal received, failing readiness');
+
+  // Deregister first, close second. Closing the socket immediately would race
+  // the load balancer, which is still sending traffic to a replica it does
+  // not yet know is going away.
+  setTimeout(() => {
+    logger.info('readiness grace elapsed, draining connections');
+
+    server.close(() => {
+      logger.info('drain complete, exiting cleanly');
+      process.exit(0);
+    });
+
+    // Keep-alive sockets sit idle between requests and would otherwise hold
+    // server.close() open until they time out on their own.
+    if (typeof server.closeIdleConnections === 'function') {
+      server.closeIdleConnections();
+    }
+
+    // Never hang forever: one client holding a connection open must not stop
+    // the replica from terminating.
+    setTimeout(() => {
+      logger.warn('drain timeout exceeded, forcing exit');
+      process.exit(1);
+    }, DRAIN_TIMEOUT_MS).unref();
+  }, READINESS_GRACE_MS).unref();
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
