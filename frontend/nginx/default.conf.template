@@ -1,0 +1,44 @@
+server {
+    # 8080, not 80: unprivileged nginx cannot bind ports below 1024.
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Probe target for the container platform. Answered by nginx itself, so it
+    # reports the frontend's own health without involving the backend: a
+    # backend incident must not restart every frontend replica.
+    location = /healthz {
+        access_log off;
+        add_header Content-Type text/plain;
+        return 200 'ok';
+    }
+
+    # Same-origin API access. The browser only ever talks to this host; the
+    # backend stays on internal ingress with no public route.
+    location /api/ {
+        proxy_pass ${BACKEND_URL};
+        proxy_http_version 1.1;
+
+        # Container Apps routes by Host header and TLS SNI. Both must name the
+        # *backend*, not this frontend, or the backend's ingress cannot tell
+        # which app the request is for and answers 502.
+        proxy_set_header Host ${BACKEND_HOST};
+        proxy_ssl_server_name on;
+
+        # The caller's original host, preserved for logging downstream.
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 30s;
+    }
+
+    # Static bundle, with a fallback so a refresh on any path still serves the
+    # app rather than a bare 404 from nginx.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
