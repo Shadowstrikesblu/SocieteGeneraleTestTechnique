@@ -19,6 +19,9 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
+  RESOURCE_GROUP: rg-sgtest
+  FRONTEND_APP: ca-sgtest-frontend
+  BACKEND_APP: ca-sgtest-backend
 
 jobs:
   build-and-push:
@@ -76,3 +79,66 @@ jobs:
           # other's layers.
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  # Deploy is a separate job so it is gated on a green build and can be re-run
+  # on its own. Terraform owns the infrastructure; this job only moves the
+  # running version forward.
+  deploy:
+    name: deploy to container apps
+    needs: build-and-push
+    # Never deploy from a pull request, and only from the default branch.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    # Job-level permissions replace the workflow defaults. id-token lets the
+    # runner request the short-lived OIDC token that Azure exchanges for
+    # access; packages: write is not needed here and is dropped.
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      # No stored credential: GitHub proves its identity, Azure issues a token
+      # valid for minutes. There is nothing long-lived to leak or to rotate.
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve image repository
+        run: echo "IMAGE_REPO=$REGISTRY/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      # The commit SHA, never :latest. Container Apps compares the image
+      # string: redeploying the same :latest tag creates no revision, so the
+      # deployment silently does nothing.
+      #
+      # Backend first: the frontend proxies to it, so it should be the newer
+      # of the two if the two rollouts briefly overlap.
+      - name: Deploy backend
+        run: az containerapp update -n "$BACKEND_APP" -g "$RESOURCE_GROUP" --image "$IMAGE_REPO/backend:$GITHUB_SHA" --output none
+
+      - name: Deploy frontend
+        run: az containerapp update -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" --image "$IMAGE_REPO/frontend:$GITHUB_SHA" --output none
+
+      # A successful update call means "request accepted", not "application
+      # works". This asserts the public URL actually serves the API through to
+      # the backend before the pipeline is allowed to report green.
+      - name: Smoke test public URL
+        run: |
+          FQDN=$(az containerapp show -n "$FRONTEND_APP" -g "$RESOURCE_GROUP" --query properties.configuration.ingress.fqdn -o tsv)
+          echo "Testing https://$FQDN"
+
+          for attempt in $(seq 1 10); do
+            body=$(curl -fsS --max-time 15 "https://$FQDN/api/health" || true)
+            if echo "$body" | grep -q '"status":"ok"'; then
+              echo "healthy: $body"
+              exit 0
+            fi
+            echo "attempt $attempt: not ready yet"
+            sleep 10
+          done
+
+          echo "::error::Deployment did not become healthy in time"
+          exit 1
